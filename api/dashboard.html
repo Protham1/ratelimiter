@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RateLimiter Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --surface-color: #1e293b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-primary: #3b82f6;
+            --accent-glow: rgba(59, 130, 246, 0.5);
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --border-radius: 16px;
+            --transition-speed: 0.3s;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
+            background-attachment: fixed;
+        }
+
+        header {
+            width: 100%;
+            max-width: 1200px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 3rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #60a5fa, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 30px rgba(96, 165, 250, 0.3);
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            padding: 0.5rem 1rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--danger);
+            box-shadow: 0 0 10px var(--danger);
+            transition: all var(--transition-speed);
+        }
+
+        .status-dot.connected {
+            background-color: var(--success);
+            box-shadow: 0 0 10px var(--success);
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: var(--border-radius);
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            transition: transform var(--transition-speed), box-shadow var(--transition-speed);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+            opacity: 0;
+            transition: opacity var(--transition-speed);
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+        }
+
+        .card:hover::before {
+            opacity: 1;
+        }
+
+        .card.active-algo {
+            grid-column: 1 / -1;
+            background: linear-gradient(145deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.9));
+            border: 1px solid rgba(96, 165, 250, 0.3);
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.15);
+        }
+
+        .card-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+
+        .card-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
+            transition: color var(--transition-speed);
+        }
+
+        .active-algo .card-value {
+            font-size: 3rem;
+            color: #60a5fa;
+            text-shadow: 0 0 20px rgba(96, 165, 250, 0.4);
+        }
+
+        .card-unit {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        /* Value Colors based on thresholds */
+        .val-safe { color: var(--success); }
+        .val-warn { color: var(--warning); }
+        .val-danger { color: var(--danger); }
+
+        .algo-badge-container {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .algo-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all var(--transition-speed);
+        }
+
+        .algo-badge.active {
+            background: rgba(59, 130, 246, 0.2);
+            border-color: var(--accent-primary);
+            color: var(--text-primary);
+            box-shadow: 0 0 15px var(--accent-glow);
+        }
+
+        .footer {
+            margin-top: auto;
+            padding-top: 3rem;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        
+        .pulse {
+            animation: pulse-animation 2s infinite;
+        }
+
+        @keyframes pulse-animation {
+            0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            .card-value {
+                font-size: 2rem;
+            }
+            .active-algo .card-value {
+                font-size: 2.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>RateLimiter Monitor</h1>
+        <div class="status-indicator">
+            <div id="connection-dot" class="status-dot"></div>
+            <span id="connection-text">Connecting...</span>
+        </div>
+    </header>
+
+    <div class="dashboard-grid">
+        <!-- Active Algorithm Card -->
+        <div class="card active-algo">
+            <div class="card-label">Active Algorithm</div>
+            <div class="card-value" id="val-algorithm">Sliding Window</div>
+            <div class="algo-badge-container">
+                <div id="badge-sliding_window" class="algo-badge active">Sliding Window</div>
+                <div id="badge-token_bucket" class="algo-badge">Token Bucket</div>
+                <div id="badge-backoff" class="algo-badge">Exp. Backoff</div>
+            </div>
+        </div>
+
+        <!-- Requests Per Second -->
+        <div class="card">
+            <div class="card-label">Requests Per Second</div>
+            <div class="card-value">
+                <span id="val-rps">0.00</span>
+                <span class="card-unit">req/s</span>
+            </div>
+        </div>
+
+        <!-- Deny Rate -->
+        <div class="card">
+            <div class="card-label">Deny Rate</div>
+            <div class="card-value">
+                <span id="val-deny-rate">0.00</span>
+                <span class="card-unit">%</span>
+            </div>
+        </div>
+
+        <!-- Burst Ratio -->
+        <div class="card">
+            <div class="card-label">Burst Ratio</div>
+            <div class="card-value">
+                <span id="val-burst-ratio">1.00</span>
+                <span class="card-unit">x</span>
+            </div>
+        </div>
+
+        <!-- Total Requests -->
+        <div class="card">
+            <div class="card-label">Total Requests</div>
+            <div class="card-value" id="val-total-req">0</div>
+        </div>
+
+        <!-- Total Denied -->
+        <div class="card">
+            <div class="card-label">Total Denied</div>
+            <div class="card-value val-danger" id="val-total-denied">0</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        Real-time metrics powered by WebSocket
+    </div>
+
+    <script>
+        const DOM = {
+            connDot: document.getElementById('connection-dot'),
+            connText: document.getElementById('connection-text'),
+            rps: document.getElementById('val-rps'),
+            denyRate: document.getElementById('val-deny-rate'),
+            burstRatio: document.getElementById('val-burst-ratio'),
+            totalReq: document.getElementById('val-total-req'),
+            totalDenied: document.getElementById('val-total-denied'),
+            algorithm: document.getElementById('val-algorithm'),
+            badges: {
+                'sliding_window': document.getElementById('badge-sliding_window'),
+                'token_bucket': document.getElementById('badge-token_bucket'),
+                'backoff': document.getElementById('badge-backoff')
+            }
+        };
+
+        const formatAlgoName = (algo) => {
+            if (algo === 'sliding_window') return 'Sliding Window';
+            if (algo === 'token_bucket') return 'Token Bucket';
+            if (algo === 'backoff') return 'Exp. Backoff';
+            return algo;
+        };
+
+        const updateColorClass = (element, value, thresholds) => {
+            element.classList.remove('val-safe', 'val-warn', 'val-danger');
+            if (value >= thresholds.danger) element.classList.add('val-danger');
+            else if (value >= thresholds.warn) element.classList.add('val-warn');
+            else element.classList.add('val-safe');
+        };
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/stats`;
+            
+            const ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                DOM.connDot.classList.add('connected');
+                DOM.connText.textContent = 'Live';
+            };
+
+            ws.onclose = () => {
+                DOM.connDot.classList.remove('connected');
+                DOM.connText.textContent = 'Disconnected. Reconnecting...';
+                setTimeout(connect, 2000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket error", err);
+                ws.close();
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                // Update text values
+                DOM.rps.textContent = data.req_per_sec.toFixed(2);
+                DOM.burstRatio.textContent = data.burst_ratio.toFixed(2);
+                
+                const denyRatePct = (data.deny_rate * 100);
+                DOM.denyRate.textContent = denyRatePct.toFixed(2);
+                
+                DOM.totalReq.textContent = data.total_requests.toLocaleString();
+                DOM.totalDenied.textContent = data.total_denied.toLocaleString();
+                
+                DOM.algorithm.textContent = formatAlgoName(data.algorithm);
+
+                // Update Threshold Colors
+                updateColorClass(DOM.rps, data.req_per_sec, { warn: 50, danger: 100 });
+                updateColorClass(DOM.denyRate, denyRatePct, { warn: 10, danger: 50 });
+                updateColorClass(DOM.burstRatio, data.burst_ratio, { warn: 2.0, danger: 4.0 });
+
+                // Update Active Algorithm Badges
+                Object.values(DOM.badges).forEach(b => b.classList.remove('active', 'pulse'));
+                if (DOM.badges[data.algorithm]) {
+                    DOM.badges[data.algorithm].classList.add('active', 'pulse');
+                }
+            };
+        }
+
+        // Initialize connection
+        connect();
+    </script>
+</body>
+</html>
