@@ -38,6 +38,6 @@ jobs:
         
     - name: Run Tests
       env:
-        REDIS_URL: redis://localhost:6379
+        TEST_REDIS_URL: redis://localhost:6379
       run: |
         pytest
