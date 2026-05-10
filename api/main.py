@@ -1,6 +1,7 @@
 import time
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -11,7 +12,8 @@ from pydantic import BaseModel
 from ratelimiter.core import RateLimiter
 
 # Initialize the rate limiter
-rl = RateLimiter(redis_url="redis://localhost:6379")
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+rl = RateLimiter(redis_url=redis_url)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

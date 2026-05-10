@@ -16,3 +16,10 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ratelimiter*", "api*"]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx"
+]
