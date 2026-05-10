@@ -17,6 +17,9 @@ dependencies = [
 where = ["."]
 include = ["ratelimiter*", "api*"]
 
+[tool.setuptools.package-data]
+"*" = ["*.lua", "*.html"]
+
 [project.optional-dependencies]
 test = [
     "pytest",
