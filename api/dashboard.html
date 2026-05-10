@@ -224,6 +224,93 @@
                 font-size: 2.5rem;
             }
         }
+
+        /* Traffic Simulator Panel */
+        .simulator-panel {
+            background: var(--surface-color);
+            border-radius: var(--border-radius);
+            padding: 2rem;
+            margin: 2rem auto;
+            max-width: 900px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .simulator-panel h2 {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+            font-size: 1.3rem;
+        }
+
+        .simulator-panel p {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .sim-buttons {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .sim-btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 10px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all var(--transition-speed) ease;
+            color: #fff;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .sim-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+
+        .sim-btn:active {
+            transform: translateY(0);
+        }
+
+        .sim-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .sim-btn.normal {
+            background: linear-gradient(135deg, #10b981, #059669);
+        }
+
+        .sim-btn.burst {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+        }
+
+        .sim-btn.spam {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+        }
+
+        .sim-btn.stop {
+            background: linear-gradient(135deg, #6b7280, #4b5563);
+        }
+
+        .sim-status {
+            margin-top: 1rem;
+            padding: 0.75rem 1rem;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            font-family: 'Inter', monospace;
+            min-height: 40px;
+            display: flex;
+            align-items: center;
+        }
+
     </style>
 </head>
 <body>
@@ -286,6 +373,19 @@
             <div class="card-label">Total Denied</div>
             <div class="card-value val-danger" id="val-total-denied">0</div>
         </div>
+    </div>
+
+    <!-- Traffic Simulator -->
+    <div class="simulator-panel">
+        <h2>🚀 Traffic Simulator</h2>
+        <p>Generate real traffic to see the rate limiter dynamically switch algorithms in real-time.</p>
+        <div class="sim-buttons">
+            <button id="btn-normal" class="sim-btn normal" onclick="simNormal()">🟢 Normal Traffic</button>
+            <button id="btn-burst" class="sim-btn burst" onclick="simBurst()">🟡 Send Burst</button>
+            <button id="btn-spam" class="sim-btn spam" onclick="simSpam()">🔴 Sustained Spam</button>
+            <button id="btn-stop" class="sim-btn stop" onclick="simStop()" disabled>⏹ Stop</button>
+        </div>
+        <div id="sim-status" class="sim-status">Ready to simulate.</div>
     </div>
 
     <div class="footer">
@@ -375,6 +475,86 @@
 
         // Initialize connection
         connect();
+
+        // ===== Traffic Simulator Logic =====
+        const simStatus = document.getElementById('sim-status');
+        const btnNormal = document.getElementById('btn-normal');
+        const btnBurst = document.getElementById('btn-burst');
+        const btnSpam = document.getElementById('btn-spam');
+        const btnStop = document.getElementById('btn-stop');
+        let spamInterval = null;
+
+        function setSimStatus(msg) {
+            simStatus.textContent = msg;
+        }
+
+        function disableAll(disable) {
+            btnNormal.disabled = disable;
+            btnBurst.disabled = disable;
+            btnSpam.disabled = disable;
+            btnStop.disabled = !disable;
+        }
+
+        async function sendRequest() {
+            try {
+                await fetch('/check', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key: 'demo_user' })
+                });
+            } catch (e) { /* ignore */ }
+        }
+
+        async function sendBatch(count) {
+            const promises = [];
+            for (let i = 0; i < count; i++) {
+                promises.push(sendRequest());
+            }
+            await Promise.all(promises);
+        }
+
+        async function simNormal() {
+            disableAll(true);
+            setSimStatus('Sending normal traffic (5 req/s for 5 seconds)...');
+            let sent = 0;
+            spamInterval = setInterval(async () => {
+                await sendBatch(5);
+                sent += 5;
+                setSimStatus(`Normal traffic: ${sent} requests sent...`);
+            }, 1000);
+            setTimeout(() => {
+                simStop();
+                setSimStatus(`Done! Sent ${sent} normal requests.`);
+            }, 5000);
+        }
+
+        async function simBurst() {
+            disableAll(true);
+            setSimStatus('Sending burst of 100 concurrent requests...');
+            await sendBatch(100);
+            setSimStatus('Burst complete! 100 requests sent. Watch the Burst Ratio spike!');
+            disableAll(false);
+        }
+
+        async function simSpam() {
+            disableAll(true);
+            setSimStatus('Sustained spam active — sending 30 req/s...');
+            let sent = 0;
+            spamInterval = setInterval(async () => {
+                await sendBatch(30);
+                sent += 30;
+                setSimStatus(`Spamming: ${sent} requests sent...`);
+            }, 1000);
+        }
+
+        function simStop() {
+            if (spamInterval) {
+                clearInterval(spamInterval);
+                spamInterval = null;
+            }
+            disableAll(false);
+            setSimStatus('Stopped. Ready to simulate again.');
+        }
     </script>
 </body>
 </html>
