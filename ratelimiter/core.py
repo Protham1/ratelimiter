@@ -49,6 +49,7 @@ class RateLimiter:
         await self._sliding_window.load()
         await self._backoff.load()
 
+        self.monitor.client = self._client
         await self.monitor.start()
 
     async def disconnect(self):
