@@ -1,9 +1,12 @@
+import time
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from ratelimiter.core import RateLimiter
 
@@ -20,6 +23,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, title="RateLimiter Dashboard")
 
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
+
 def get_dashboard_html():
     try:
         with open("api/dashboard.html", "r", encoding="utf-8") as f:
@@ -32,16 +43,42 @@ async def dashboard():
     """Serve the dashboard HTML page."""
     return get_dashboard_html()
 
-@app.get("/check/{key}")
-async def check_rate_limit(key: str, limit: int = None, window: int = None):
+@app.get("/health")
+async def health_check():
+    """Check system health and Redis connectivity."""
+    try:
+        await rl._client.ping()
+        return {"status": "ok", "redis": "connected"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Redis connection failed")
+
+@app.get("/metrics")
+async def get_metrics():
+    """Expose global traffic statistics."""
+    stats = rl.monitor.get_stats()
+    return {
+        "req_per_sec": stats.req_per_sec,
+        "burst_ratio": stats.burst_ratio,
+        "deny_rate": stats.deny_rate,
+        "active_algorithm": stats.active_algorithm,
+        "total_requests": stats.total_requests,
+        "total_denied": stats.total_denied
+    }
+
+class CheckRequest(BaseModel):
+    key: str
+    limit: Optional[int] = None
+    window: Optional[int] = None
+
+@app.post("/check")
+async def check_rate_limit(request: CheckRequest):
     """
-    Manually test the rate limiter.
-    Example: /check/user_123
+    Manually test the rate limiter via POST payload.
     """
     try:
-        result = await rl.check(key, limit=limit, window=window)
+        result = await rl.check(request.key, limit=request.limit, window=request.window)
         return {
-            "key": key,
+            "key": request.key,
             "allowed": result.allowed,
             "remaining": result.remaining,
             "algorithm": result.algorithm,
