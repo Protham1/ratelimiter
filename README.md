@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="assets/banner.png" alt="RateLimiter Banner" width="100%"/>
-</p>
+<h1 align="center">Distributed RateLimiter</h1>
 
 <p align="center">
   <strong>A high-performance, distributed rate-limiting service that dynamically switches algorithms based on real-time traffic patterns.</strong>
