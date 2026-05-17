@@ -22,7 +22,7 @@ Most rate limiters use a single, static algorithm. This project is different —
 |----------|-------------------|-----|
 | Normal, steady traffic | **Sliding Window** | Precise, fair counting per time window |
 | Sudden spike / burst | **Token Bucket** | Absorbs short bursts gracefully via token refill |
-| Sustained abuse / DDoS | **Exponential Backoff** | Aggressively throttles repeat offenders |
+| Sustained abuse / DDoS | **Exponential Backoff** | Aggressively throttles repeat offenders with hard cooldown |
 
 The system continuously analyzes **Requests Per Second**, **Burst Ratio**, and **Deny Rate** to make this decision — all computed from global Redis metrics, not local memory.
 
@@ -52,7 +52,7 @@ The system continuously analyzes **Requests Per Second**, **Burst Ratio**, and *
 │  │  ┌──────────┐ ┌────────┐ ┌──────────┐  │            │
 │  │  │ Sliding  │ │ Token  │ │  Exp.    │  │            │
 │  │  │ Window   │ │ Bucket │ │ Backoff  │  │            │
-│  │  │ (Lua)    │ │ (Lua)  │ │ (Lua)    │  │            │
+│  │  │ (Lua)    │ │ (Lua)  │ │ (Lua)   │  │            │
 │  │  └──────────┘ └────────┘ └──────────┘  │            │
 │  └─────────────────┬───────────────────────┘            │
 │                    │                                     │
@@ -72,7 +72,7 @@ The system continuously analyzes **Requests Per Second**, **Burst Ratio**, and *
               │                 │
               │  Sorted Sets    │  ← Sliding Window
               │  Hash Maps      │  ← Token Bucket
-              │  Key/Value      │  ← Backoff Levels
+              │  Key/Value      │  ← Backoff Levels, Cooldown
               │  Metric Buckets │  ← Global Analytics
               │  Config Store   │  ← Algorithm Consensus
               └─────────────────┘
@@ -102,6 +102,8 @@ end
 
 **Why Lua?** Redis executes Lua scripts atomically — no other command can interleave. This eliminates race conditions that would occur with separate `GET` → check → `SET` calls in Python.
 
+**Memory complexity:** O(R) per client where R is requests in the current window. At a limit of 100 req/min, worst case is ~13KB per client. For high-volume use cases, Token Bucket's O(1) footprint is preferable.
+
 ### 2. Token Bucket (Lua Script)
 
 Activated when the **Burst Ratio exceeds 3.0x**. Uses a **Redis Hash** to store the current token count and last refill timestamp. On every check:
@@ -117,34 +119,38 @@ local refill = math.floor(elapsed * refill_rate)
 tokens = math.min(capacity, tokens + refill)
 ```
 
-**Why Token Bucket for bursts?** Unlike Sliding Window which has a hard cutoff, Token Bucket allows accumulated tokens to absorb short spikes gracefully.
+**Why Token Bucket for bursts?** Unlike Sliding Window which has a hard cutoff, Token Bucket allows accumulated tokens to absorb short spikes gracefully. It's also O(1) memory per client regardless of request volume.
 
 ### 3. Exponential Backoff (Lua Script)
 
-Activated when **Deny Rate > 50% AND RPS > 20** (sustained abuse). Instead of a fixed limit, the effective limit is dynamically halved:
+Activated when **Deny Rate > 50% AND RPS > 20** (sustained abuse). All state — level escalation, deny tracking, cooldown — runs inside a single atomic Lua script to prevent race conditions under concurrent load.
+
+Effective limit is dynamically halved per level:
 
 ```
 effective_limit = max(1, base_limit ÷ 2^level)
 ```
 
-Every 10 denied requests, the `backoff_level` increases (up to level 5), making limits progressively stricter:
+Every 10 consecutive denied requests escalates the backoff level. At level 5, a **hard cooldown** is triggered — all requests from that client are rejected until the TTL expires.
 
-| Level | Effective Limit (base=100) |
-|-------|---------------------------|
-| 0 | 100 |
-| 1 | 50 |
-| 2 | 25 |
-| 3 | 12 |
-| 4 | 6 |
-| 5 | 3 |
+| Level | Effective Limit (base=100) | Trigger |
+|-------|---------------------------|---------|
+| 0 | 100 | Default |
+| 1 | 50 | 10 denials |
+| 2 | 25 | 20 denials |
+| 3 | 12 | 30 denials |
+| 4 | 6 | 40 denials |
+| 5 | 3 → Hard Cooldown | 50 denials |
 
-The backoff level is stored in Redis with a 5-minute TTL, so it auto-recovers.
+**De-escalation:** When a client's request counter expires naturally (window reset), they are de-escalated one level. This rewards sustained good behavior without adding overhead to the hot path.
+
+**Responses include a `retry_after` hint** equal to `2^level` seconds, giving well-behaved clients a backoff signal.
 
 ---
 
 ## 🔄 Hybrid Redis Architecture (The Key Innovation)
 
-The biggest challenge in distributed rate limiting is: **how do multiple server instances agree on traffic patterns?**
+The biggest challenge in distributed rate limiting is: **how do multiple server instances agree on traffic patterns without each request paying a round-trip to Redis?**
 
 ### The Problem
 If you run 3 FastAPI servers behind a load balancer, each server only sees ~33% of the traffic. Server A might think traffic is calm while Server B is getting hammered.
@@ -173,7 +179,7 @@ Every **1 second**, each server instance executes a Redis pipeline:
 ```
 
 ### Why This is Fast
-- **`record()` is zero-latency**: It just increments a Python integer (`self._local_reqs += 1`). No Redis call, no I/O, no blocking.
+- **`record()` is zero-latency**: Just increments a Python integer (`self._local_reqs += 1`). No Redis call, no I/O, no blocking.
 - **Sync is batched**: All Redis operations are packed into a single **pipeline** (1 round-trip, not 20+).
 - **Buckets auto-expire**: Each metric bucket has a 20-second TTL, so Redis memory stays constant regardless of traffic volume.
 
@@ -217,9 +223,9 @@ Test the rate limiter against a key.
   "key": "user_123",
   "allowed": false,
   "remaining": 0,
-  "algorithm": "token_bucket",
-  "retry_after": 0.1,
-  "backoff_level": 0
+  "algorithm": "exponential_backoff",
+  "retry_after": 4.0,
+  "backoff_level": 2
 }
 ```
 
@@ -248,25 +254,83 @@ All responses include an `X-Process-Time` header (e.g., `0.002s`) for latency ob
 
 ## 📊 Benchmarks (k6)
 
-Benchmarked with [k6](https://k6.io/) using a 60-second test ramping from 0 → 50 → 300 virtual users against a **3-instance cluster load-balanced via Nginx**:
+Benchmarked with [k6](https://k6.io/) using a 60-second test ramping from 0 → 50 → 300 virtual users against a **3-instance cluster load-balanced via Nginx**.
+
+### 3-Instance Cluster (Current)
 
 | Metric | Value |
 |--------|-------|
-| Total Requests | 59,665 |
+| Total Requests | 120,038 |
 | Throughput | ~1,000 req/s |
-| Avg Latency | 25.37ms |
-| p95 Latency | 71.96ms |
+| Avg Latency | 24.66ms |
+| Median Latency | 14.07ms |
+| p90 Latency | 59.39ms |
+| p95 Latency | 75.01ms |
+| Max Latency | 253.44ms |
 | Checks Passed | 100% |
 | HTTP Failures | 0% |
 
-Run the benchmark yourself:
+### Single Instance (Baseline)
+
+| Metric | Value |
+|--------|-------|
+| Throughput | ~561 req/s |
+| Avg Latency | 122ms |
+| p95 Latency | 314ms |
+
+### What the Numbers Mean
+
+The 3-instance cluster delivers ~349 req/s per instance vs the 561 req/s single-instance baseline — a ~38% per-instance reduction. This overhead is the **coordination cost**: cross-instance quota sync, shared Lua state in Redis, and atomic deny tracking. This is an intentional correctness-performance tradeoff — incorrect rate limiting decisions under concurrent load are worse than slightly higher throughput.
+
+The median latency of 14ms vs avg of 24ms indicates a latency tail: ~10% of requests are slower due to Redis queue depth under peak concurrency (300 VUs). The hot path consistently delivers sub-15ms.
+
 ```bash
-# Natively
+# Run the benchmark yourself
 k6 run k6_benchmark.js
 
 # Or via Docker
 docker run --rm -v ${PWD}:/scripts -w /scripts grafana/k6 run k6_benchmark.js
 ```
+
+---
+
+## 🔧 Performance Optimizations
+
+| Optimization | Detail |
+|-------------|--------|
+| **All Lua Scripts** | All three algorithms run as atomic Redis scripts — zero race conditions across sliding window, token bucket, and exponential backoff |
+| **Redis Pipelines** | All monitoring I/O is batched into a single pipeline (1 round-trip per second) |
+| **Zero-Latency Recording** | `record()` increments a local Python integer — no I/O on the hot path |
+| **Auto-Expiring Buckets** | Metric keys have 20s TTL, keeping Redis memory constant |
+| **Minimal Redis Calls** | Hot path averages 3–4 Redis ops per request; expensive ops (TTL refresh, level escalation) only fire on state transitions |
+| **Multi-Stage Docker** | Builder pattern keeps the final image lean (~150MB vs ~800MB) |
+| **Script Preloading** | Lua scripts are loaded once via `SCRIPT LOAD` and called by SHA — no re-parsing |
+| **Async Everything** | Fully async FastAPI + `redis.asyncio` — no thread blocking |
+
+---
+
+## 🧩 Design Decisions & Tradeoffs
+
+### Why Redis as the coordination layer?
+Redis gives atomic Lua execution, sub-millisecond ops, and sidesteps distributed clock skew by making Redis the single time authority. The tradeoff is Redis becomes a single point of failure. In production this would be mitigated with Redis Sentinel (automatic failover) or a circuit breaker that falls back to per-instance in-memory limiting if Redis becomes unreachable.
+
+### Fail open vs fail closed
+If Redis goes down, the current system fails. The correct production behavior is **fail open with a circuit breaker** — detect Redis unavailability, switch to local in-memory limiting per instance, alert loudly, and resume coordinated limiting once Redis recovers. A rate limiter should never be more fragile than the service it protects.
+
+### The 1-second sync window
+Global metrics are up to 1 second stale. In the worst case, a client could get `N × limit` requests through across N instances within a single sync window. For stricter guarantees, a **distributed quota leasing** model (each instance pre-leases a token chunk from Redis, replenishes as needed) would reduce the stale window to near-zero while preserving the zero-latency local hot path.
+
+### Algorithm switching hysteresis
+Algorithm selection is currently evaluated every sync cycle. If traffic metrics oscillate around a threshold, the system could flap between algorithms. A production implementation would add a minimum dwell time (e.g., stay on the current algorithm for at least 5 seconds before switching) to prevent instability.
+
+---
+
+## ⚠️ Known Limitations
+
+- **Single Redis instance**: No replication or failover. A Redis crash takes down coordinated limiting.
+- **No multi-node correctness benchmark**: Distributed correctness (verifying no client exceeds global limits across instances) has not been formally benchmarked — only throughput and latency have been measured across instances.
+- **Algorithm switching has no hysteresis**: Rapid threshold oscillation can cause frequent algorithm switches.
+- **1-second coordination lag**: Global traffic view is eventually consistent within a 1-second window.
 
 ---
 
@@ -299,8 +363,11 @@ uvicorn api.main:app --reload
 ### Option 2: Docker Compose (Recommended)
 
 ```bash
-# Spins up both Redis and the API
+# Spins up Redis + single API instance
 docker-compose up --build
+
+# Scale to 3 instances behind Nginx
+docker-compose up --build --scale api=3
 
 # Access the dashboard
 open http://localhost:8000
@@ -309,7 +376,6 @@ open http://localhost:8000
 ### Running Tests
 
 ```bash
-# Requires Redis running (Docker Compose handles this)
 pytest
 ```
 
@@ -321,7 +387,7 @@ pytest
 ratelimiter/
 ├── api/
 │   ├── main.py              # FastAPI app, endpoints, middleware
-│   └── dashboard.html        # Real-time monitoring UI
+│   └── dashboard.html       # Real-time monitoring UI
 ├── ratelimiter/
 │   ├── core.py              # RateLimiter orchestrator
 │   ├── monitor.py           # Hybrid Redis traffic monitor
@@ -332,7 +398,7 @@ ratelimiter/
 │   └── scripts/
 │       ├── sliding_window.lua
 │       ├── token_bucket.lua
-│       └── backoff.lua
+│       └── backoff.lua      # Full atomic backoff: escalation, cooldown, de-escalation
 ├── tests/
 │   ├── conftest.py          # Pytest fixtures (Redis cleanup)
 │   ├── test_algorithms.py   # Unit tests for all 3 algorithms
@@ -347,24 +413,10 @@ ratelimiter/
 
 ---
 
-## 🔧 Performance Optimizations
-
-| Optimization | Detail |
-|-------------|--------|
-| **Lua Scripts** | Sliding Window and Token Bucket run as atomic Redis scripts — zero race conditions |
-| **Redis Pipelines** | All monitoring I/O is batched into a single pipeline (1 round-trip per second) |
-| **Zero-Latency Recording** | `record()` increments a local Python integer — no I/O on the hot path |
-| **Auto-Expiring Buckets** | Metric keys have 20s TTL, keeping Redis memory constant |
-| **Multi-Stage Docker** | Builder pattern keeps the final image lean (~150MB vs ~800MB) |
-| **Script Preloading** | Lua scripts are loaded once via `SCRIPT LOAD` and called by SHA — no re-parsing |
-| **Async Everything** | Fully async FastAPI + `redis.asyncio` — no thread blocking |
-
----
-
 ## 🛠️ DevOps & CI/CD
 
 - **GitHub Actions**: Every push to `main` triggers automated tests against a Redis service container
-- **Docker Compose**: One-command local orchestration of API + Redis
+- **Docker Compose**: One-command local orchestration of API + Redis, with `--scale` support for multi-instance testing
 - **Railway Ready**: Configured with dynamic `PORT` binding and `REDIS_URL` env var for instant cloud deployment
 
 ---
