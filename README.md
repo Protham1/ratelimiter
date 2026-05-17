@@ -54,7 +54,7 @@ The system continuously analyzes **Requests Per Second**, **Burst Ratio**, and *
 │  │  ┌──────────┐ ┌────────┐ ┌──────────┐  │            │
 │  │  │ Sliding  │ │ Token  │ │  Exp.    │  │            │
 │  │  │ Window   │ │ Bucket │ │ Backoff  │  │            │
-│  │  │ (Lua)    │ │ (Lua)  │ │ (Python) │  │            │
+│  │  │ (Lua)    │ │ (Lua)  │ │ (Lua)    │  │            │
 │  │  └──────────┘ └────────┘ └──────────┘  │            │
 │  └─────────────────┬───────────────────────┘            │
 │                    │                                     │
@@ -121,7 +121,7 @@ tokens = math.min(capacity, tokens + refill)
 
 **Why Token Bucket for bursts?** Unlike Sliding Window which has a hard cutoff, Token Bucket allows accumulated tokens to absorb short spikes gracefully.
 
-### 3. Exponential Backoff (Python)
+### 3. Exponential Backoff (Lua Script)
 
 Activated when **Deny Rate > 50% AND RPS > 20** (sustained abuse). Instead of a fixed limit, the effective limit is dynamically halved:
 
@@ -250,20 +250,24 @@ All responses include an `X-Process-Time` header (e.g., `0.002s`) for latency ob
 
 ## 📊 Benchmarks (k6)
 
-Benchmarked with [k6](https://k6.io/) using a 60-second test ramping from 0 → 50 → 300 virtual users:
+Benchmarked with [k6](https://k6.io/) using a 60-second test ramping from 0 → 50 → 300 virtual users against a **3-instance cluster load-balanced via Nginx**:
 
 | Metric | Value |
 |--------|-------|
-| Total Requests | 33,712 |
-| Throughput | 561 req/s |
-| Avg Latency | 122ms |
-| p95 Latency | 314ms |
+| Total Requests | 59,665 |
+| Throughput | ~1,000 req/s |
+| Avg Latency | 25.37ms |
+| p95 Latency | 71.96ms |
 | Checks Passed | 100% |
 | HTTP Failures | 0% |
 
 Run the benchmark yourself:
 ```bash
-docker run --rm -i -v ${PWD}:/app -w /app grafana/k6 run k6_benchmark.js
+# Natively
+k6 run k6_benchmark.js
+
+# Or via Docker
+docker run --rm -v ${PWD}:/scripts -w /scripts grafana/k6 run k6_benchmark.js
 ```
 
 ---
@@ -329,7 +333,8 @@ ratelimiter/
 │   │   └── backoff.py
 │   └── scripts/
 │       ├── sliding_window.lua
-│       └── token_bucket.lua
+│       ├── token_bucket.lua
+│       └── backoff.lua
 ├── tests/
 │   ├── conftest.py          # Pytest fixtures (Redis cleanup)
 │   ├── test_algorithms.py   # Unit tests for all 3 algorithms
