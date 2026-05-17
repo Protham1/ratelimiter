@@ -88,7 +88,7 @@ class RateLimiter:
             allowed=result["allowed"],
             remaining=result["remaining"],
             algorithm=result["algorithm"],
-            retry_after=retry_after,
+            retry_after=result.get("retry_after", retry_after),
             backoff_level=result.get("backoff_level", 0)
         )
 

@@ -53,17 +53,13 @@ async def test_exponential_backoff_triggers(rate_limiter: RateLimiter):
     rate_limiter.monitor._stats.active_algorithm = "backoff"
     key = "bo_test_user"
     
-    # Flood the backoff algorithm to reach count = 10
-    # which triggers the level increment
-    for _ in range(10):
+    # Flood the backoff algorithm to reach 10 consecutive denials
+    # Capacity is 5, so 5 allowed + 10 denied = 15 requests
+    for _ in range(15):
         await rate_limiter.check(key)
         
     # Now it should be denying AND have an increased backoff level
     result = await rate_limiter.check(key)
     assert result.allowed is False
     assert result.algorithm == "backoff"
-    
-    # We must check it one MORE time for the new level to be returned 
-    # since the previous check SET the level but returned the old level.
-    result = await rate_limiter.check(key)
     assert result.backoff_level > 0
